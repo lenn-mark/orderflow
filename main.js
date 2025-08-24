@@ -233,6 +233,7 @@ async function syncUserOrdersInternal(api, userId, connection) {
     let totalFound = 0;
     let totalSynced = 0;
     let totalUpdated = 0;
+    let ordersResponse = null;
 
     // Her marketplace için siparişleri çek
     for (const marketplace of userMarketplaces) {
@@ -243,7 +244,7 @@ async function syncUserOrdersInternal(api, userId, connection) {
             createdAfter.setDate(createdAfter.getDate() - 30); // Son 30 gün
             
             const endpoint = `/orders/v0/orders?CreatedAfter=${createdAfter.toISOString()}&MarketplaceIds=${marketplace.marketplace_id}`;
-            const ordersResponse = await makeAmazonAPIRequest(endpoint, currentAccessToken, connection.region);
+            ordersResponse = await makeAmazonAPIRequest(endpoint, currentAccessToken, connection.region);
             
             const amazonOrders = ordersResponse.payload?.Orders || [];
             totalFound += amazonOrders.length;
@@ -252,7 +253,6 @@ async function syncUserOrdersInternal(api, userId, connection) {
                 try {
                     // Existing order check (in-memory)
                     const existingOrder = userOrdersInDB.find(o => o.amazon_order_id === amazonOrder.AmazonOrderId);
-                    
                     const orderItems = await fetchOrderItems(amazonOrder.AmazonOrderId, currentAccessToken, connection.region);
                     const transformedItems = orderItems.map(item => ({
                         order_item_id: item.OrderItemId,
