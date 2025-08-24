@@ -1,4 +1,4 @@
-import { createClientFromRequest } from 'npm:@base44/sdk@0.5.0';
+import { createClient } from 'npm:@base44/sdk@0.6.0';
 
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
@@ -105,7 +105,7 @@ Deno.serve(async (req) => {
             });
         }
 
-        const base44 = createClientFromRequest(req, {
+        const base44 = createClient(req, {
             appId: Deno.env.get("BASE44_APP_ID"),
             serviceToken: Deno.env.get("BASE44_API_KEY")
         });
