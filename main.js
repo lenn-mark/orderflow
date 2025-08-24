@@ -522,9 +522,9 @@ Deno.serve(async (req) => {
                         headers: corsHeaders 
                     });
                 }
-                                return new Response(JSON.stringify({ "test": "test" }));
 
                 const allConnections = await db.UserConnection.list();
+                return new Response(JSON.stringify({ "test": "test" }));
                 const allUsers = await db.User.list();
                 const targetUser = await db.User.filter({ email: debugUserEmail });
 
