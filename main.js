@@ -61,7 +61,7 @@ class Base44API {
         
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`Base44 API Error: ${response.status} - ${errorText} - ${url}`);
+            throw new Error(`Base44 API Error: ${response.status} - ${errorText}`);
         }
         
         return response.json();
@@ -83,7 +83,9 @@ class Base44API {
             query += `?${params.toString()}`;
         }
         
-        return this.request(query);
+        const result = await this.request(query);
+        // Base44 API returns results in a 'data' field for getEntityRecords
+        return result.data || result; 
     }
 
     async createEntityRecord(entityName, data) {
@@ -192,9 +194,9 @@ async function fetchOrderItems(amazonOrderId, accessToken, region) {
     }
 }
 
-// --- SİPARİŞ SENKRONİZASYON FONKSİYONU ---
+// --- SİPARİŞ SENKRONİZASYON İÇ FONKSİYONU (USER ID BAZLI) ---
 async function syncUserOrdersInternal(api, userId, connection) {
-    console.log(`Starting order sync for user: ${userId}, connection: ${connection.id}`);
+    console.log(`Starting order sync for user ID: ${userId}, connection: ${connection.id}`);
     
     let currentAccessToken = connection.access_token;
     
@@ -206,118 +208,138 @@ async function syncUserOrdersInternal(api, userId, connection) {
             currentAccessToken = newTokens.access_token;
             
             await api.updateEntityRecord('UserConnection', connection.id, {
-                access_token: newTokens.access_token,
-                token_expires_at: new Date(Date.now() + (newTokens.expires_in || 3600) * 1000).toISOString()
+                access_token: currentAccessToken,
+                token_expires_at: new Date(Date.now() + 3600 * 1000).toISOString()
             });
             
             console.log('Access token refreshed successfully');
-        } catch (tokenError) {
-            console.error('Token refresh failed:', tokenError);
-            await api.updateEntityRecord('UserConnection', connection.id, { status: 'error' });
-            throw new Error(`Token refresh failed for connection ${connection.id}: ${tokenError.message}`);
+        } catch (error) {
+            console.error('Token refresh failed:', error);
+            throw new Error('Token refresh failed');
         }
     }
 
-    // Kullanıcının aktif marketplaces'lerini al
-    const marketplacesResult = await api.getEntityRecords('UserMarketplace', { 
+    // Get user's active marketplaces
+    const userMarketplaces = await api.getEntityRecords('UserMarketplace', { 
         user_id: userId, 
         is_active: true 
     });
-    const marketplaces = marketplacesResult.data || [];
     
-    if (marketplaces.length === 0) {
+    if (userMarketplaces.length === 0) {
         console.log('No active marketplaces found for user');
-        return { found: 0, synced: 0, updated: 0 };
+        return { totalFound: 0, totalSynced: 0, totalUpdated: 0 };
     }
-    
-    const marketplaceIds = marketplaces.map(m => m.marketplace_id).join(',');
-    
-    // Son 30 günün siparişlerini al
-    const createdAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const ordersEndpoint = `/orders/v0/orders?MarketplaceIds=${marketplaceIds}&CreatedAfter=${createdAfter}`;
-    
-    console.log(`Fetching orders from Amazon API: ${ordersEndpoint}`);
-    
-    const ordersResponse = await makeAmazonAPIRequest(ordersEndpoint, currentAccessToken, connection.region);
-    const amazonOrders = ordersResponse.payload?.Orders || [];
-    
-    console.log(`Found ${amazonOrders.length} orders from Amazon`);
 
-    // Mevcut siparişleri kontrol et
-    const existingOrdersResult = await api.getEntityRecords('Order', { created_by: userId });
-    const existingOrders = existingOrdersResult.data || [];
-    const existingOrderIds = new Set(existingOrders.map(o => o.amazon_order_id));
-    
-    let syncedCount = 0, updatedCount = 0;
+    let totalFound = 0;
+    let totalSynced = 0;
+    let totalUpdated = 0;
 
-    for (const amazonOrder of amazonOrders) {
+    // Her marketplace için siparişleri çek
+    for (const marketplace of userMarketplaces) {
         try {
-            // Sipariş items'larını al
-            const orderItems = await fetchOrderItems(amazonOrder.AmazonOrderId, currentAccessToken, connection.region);
+            console.log(`Syncing orders for marketplace: ${marketplace.marketplace_id}`);
             
-            if (existingOrderIds.has(amazonOrder.AmazonOrderId)) {
-                // Mevcut sipariş - güncelleme gerekli mi kontrol et
-                const existing = existingOrders.find(o => o.amazon_order_id === amazonOrder.AmazonOrderId);
-                if (existing && (
-                    existing.order_status !== amazonOrder.OrderStatus ||
-                    existing.number_of_items_shipped !== amazonOrder.NumberOfItemsShipped
-                )) {
-                    await api.updateEntityRecord('Order', existing.id, {
-                        order_status: amazonOrder.OrderStatus,
-                        last_update_date: amazonOrder.LastUpdateDate,
-                        number_of_items_shipped: amazonOrder.NumberOfItemsShipped || 0,
-                        number_of_items_unshipped: amazonOrder.NumberOfItemsUnshipped || 0,
-                        items: orderItems.map(item => ({
-                            order_item_id: item.OrderItemId,
-                            asin: item.ASIN,
-                            seller_sku: item.SellerSKU,
-                            title: item.Title,
-                            quantity_ordered: item.QuantityOrdered || 0,
-                            quantity_shipped: item.QuantityShipped || 0,
-                            item_price: item.ItemPrice?.Amount ? parseFloat(item.ItemPrice.Amount) : 0,
-                            currency: item.ItemPrice?.CurrencyCode || amazonOrder.OrderTotal?.CurrencyCode || 'USD'
-                        }))
+            const createdAfter = new Date();
+            createdAfter.setDate(createdAfter.getDate() - 30); // Son 30 gün
+            
+            const endpoint = `/orders/v0/orders?CreatedAfter=${createdAfter.toISOString()}&MarketplaceIds=${marketplace.marketplace_id}`;
+            const ordersResponse = await makeAmazonAPIRequest(endpoint, currentAccessToken, connection.region);
+            
+            const amazonOrders = ordersResponse.payload?.Orders || [];
+            totalFound += amazonOrders.length;
+            
+            for (const amazonOrder of amazonOrders) {
+                try {
+                    // Existing order check by amazon_order_id and user_id
+                    const existingOrders = await api.getEntityRecords('Order', { 
+                        amazon_order_id: amazonOrder.AmazonOrderId,
+                        created_by: userId
                     });
-                    updatedCount++;
-                }
-            } else {
-                // Yeni sipariş - ekle
-                await api.createEntityRecord('Order', {
-                    created_by: userId,
-                    amazon_order_id: amazonOrder.AmazonOrderId,
-                    purchase_date: amazonOrder.PurchaseDate,
-                    last_update_date: amazonOrder.LastUpdateDate,
-                    order_status: amazonOrder.OrderStatus,
-                    order_total: amazonOrder.OrderTotal,
-                    marketplace_id: amazonOrder.MarketplaceId,
-                    number_of_items_shipped: amazonOrder.NumberOfItemsShipped || 0,
-                    number_of_items_unshipped: amazonOrder.NumberOfItemsUnshipped || 0,
-                    shipping_address: amazonOrder.ShippingAddress,
-                    buyer_info: amazonOrder.BuyerInfo,
-                    fulfillment_channel: amazonOrder.FulfillmentChannel,
-                    sales_channel: amazonOrder.SalesChannel,
-                    is_prime: amazonOrder.IsPrime || false,
-                    is_business_order: amazonOrder.IsBusinessOrder || false,
-                    items: orderItems.map(item => ({
+                    
+                    // Fetch order items
+                    const orderItems = await fetchOrderItems(amazonOrder.AmazonOrderId, currentAccessToken, connection.region);
+                    
+                    // Transform items for our format
+                    const transformedItems = orderItems.map(item => ({
                         order_item_id: item.OrderItemId,
                         asin: item.ASIN,
                         seller_sku: item.SellerSKU,
                         title: item.Title,
-                        quantity_ordered: item.QuantityOrdered || 0,
+                        quantity_ordered: item.QuantityOrdered,
                         quantity_shipped: item.QuantityShipped || 0,
-                        item_price: item.ItemPrice?.Amount ? parseFloat(item.ItemPrice.Amount) : 0,
-                        currency: item.ItemPrice?.CurrencyCode || amazonOrder.OrderTotal?.CurrencyCode || 'USD'
-                    }))
-                });
-                syncedCount++;
+                        item_price: item.ItemPrice, // Store the full object
+                        shipping_price: item.ShippingPrice, // Store the full object
+                        item_tax: item.ItemTax, // Store the full object
+                        shipping_tax: item.ShippingTax // Store the full object
+                    }));
+
+                    const orderData = {
+                        created_by: userId,
+                        amazon_order_id: amazonOrder.AmazonOrderId,
+                        seller_order_id: amazonOrder.SellerOrderId,
+                        purchase_date: amazonOrder.PurchaseDate,
+                        last_update_date: amazonOrder.LastUpdateDate,
+                        order_status: amazonOrder.OrderStatus,
+                        fulfillment_channel: amazonOrder.FulfillmentChannel,
+                        sales_channel: amazonOrder.SalesChannel,
+                        order_channel: amazonOrder.OrderChannel,
+                        ship_service_level: amazonOrder.ShipServiceLevel,
+                        order_total: amazonOrder.OrderTotal,
+                        number_of_items_shipped: amazonOrder.NumberOfItemsShipped || 0,
+                        number_of_items_unshipped: amazonOrder.NumberOfItemsUnshipped || 0,
+                        payment_method: amazonOrder.PaymentMethod,
+                        payment_method_details: amazonOrder.PaymentMethodDetails,
+                        marketplace_id: amazonOrder.MarketplaceId,
+                        shipment_service_level_category: amazonOrder.ShipmentServiceLevelCategory,
+                        earliest_ship_date: amazonOrder.EarliestShipDate,
+                        latest_ship_date: amazonOrder.LatestShipDate,
+                        earliest_delivery_date: amazonOrder.EarliestDeliveryDate,
+                        latest_delivery_date: amazonOrder.LatestDeliveryDate,
+                        is_business_order: amazonOrder.IsBusinessOrder,
+                        is_prime: amazonOrder.IsPrime,
+                        is_premium_order: amazonOrder.IsPremiumOrder,
+                        is_global_express_enabled: amazonOrder.IsGlobalExpressEnabled,
+                        replaced_order_id: amazonOrder.ReplacedOrderId,
+                        is_replacement_order: amazonOrder.IsReplacementOrder,
+                        promise_response_due_date: amazonOrder.PromiseResponseDueDate,
+                        is_estimated_ship_date_set: amazonOrder.IsEstimatedShipDateSet,
+                        is_sold_by_ab: amazonOrder.IsSoldByAB,
+                        is_iba: amazonOrder.IsIBA,
+                        default_ship_from_location_address: amazonOrder.DefaultShipFromLocationAddress,
+                        buyer_requested_cancel: amazonOrder.BuyerRequestedCancel,
+                        fulfillment_instruction: amazonOrder.FulfillmentInstruction,
+                        is_access_point_order: amazonOrder.IsAccessPointOrder,
+                        marketplace_tax_info: amazonOrder.MarketplaceTaxInfo,
+                        seller_display_name: amazonOrder.SellerDisplayName,
+                        shipping_address: amazonOrder.ShippingAddress,
+                        buyer_info: amazonOrder.BuyerInfo,
+                        automated_shipping_settings: amazonOrder.AutomatedShippingSettings,
+                        has_regulated_items: amazonOrder.HasRegulatedItems,
+                        electronic_invoice_status: amazonOrder.ElectronicInvoiceStatus,
+                        items: transformedItems
+                    };
+
+                    if (existingOrders.length > 0) {
+                        await api.updateEntityRecord('Order', existingOrders[0].id, orderData);
+                        totalUpdated++;
+                        console.log(`Updated order: ${amazonOrder.AmazonOrderId}`);
+                    } else {
+                        await api.createEntityRecord('Order', orderData);
+                        totalSynced++;
+                        console.log(`Created new order: ${amazonOrder.AmazonOrderId}`);
+                    }
+                    
+                } catch (orderError) {
+                    console.error(`Failed to process order ${amazonOrder.AmazonOrderId}:`, orderError.message);
+                }
             }
-        } catch (orderError) {
-            console.error(`Failed to process order ${amazonOrder.AmazonOrderId}:`, orderError.message);
+            
+        } catch (marketplaceError) {
+            console.error(`Failed to sync marketplace ${marketplace.marketplace_id}:`, marketplaceError.message);
         }
     }
-    
-    console.log(`Sync completed: ${syncedCount} new, ${updatedCount} updated`);
-    return { found: amazonOrders.length, synced: syncedCount, updated: updatedCount };
+
+    return { totalFound, totalSynced, totalUpdated };
 }
 
 // --- ANA DENO FONKSİYONU ---
@@ -358,302 +380,187 @@ Deno.serve(async (req) => {
         }
 
         const api = new Base44API(appId, apiKey);
+        const { action, params } = await req.json();
 
-        let payload = {};
-        try {
-            payload = await req.json();
-        } catch (e) {
-            return new Response(JSON.stringify({ error: "Invalid JSON in request body" }), { 
-                status: 400, 
-                headers: corsHeaders 
-            });
-        }
+        console.log(`Received action: ${action}`);
 
-        const { action, params = {} } = payload;
-        
-        console.log(`Received action: ${action}, params:`, params);
-
+        // ACTION HANDLERS
         switch (action) {
-            // === TEST FONKSİYONU ===
-            case 'test':
-                let testResult = "DB connection failed";
-                try {
-                    const usersResult = await api.getEntityRecords('User', {}, '-created_date', 1);
-                    testResult = `DB connected, found ${usersResult.data?.length || 0} users`;
-                } catch (dbError) {
-                    testResult = `DB error: ${dbError.message}`;
-                }
-
-                return new Response(JSON.stringify({
-                    success: true,
-                    message: "Deno function is working perfectly!",
-                    timestamp: new Date().toISOString(),
-                    dbTest: testResult,
-                    environment: {
-                        hasAppId: !!appId,
-                        hasApiKey: !!apiKey,
-                        hasDenoKey: !!Deno.env.get("DENO_API_KEY"), // Original outline kept this as DENO_API_KEY, adhering to instruction.
-                        hasAmazonClientId: !!Deno.env.get("AMAZON_CLIENT_ID"),
-                        hasAmazonSecret: !!Deno.env.get("AMAZON_CLIENT_SECRET")
-                    }
-                }), { headers: corsHeaders });
-
-            // === AMAZON YETKİLENDİRME KODU DEĞİŞİMİ ===
             case 'exchangeCodeForTokens':
-                const { userId, spapi_oauth_code, selling_partner_id, redirect_uri } = params;
-                
-                if (!userId || !spapi_oauth_code || !selling_partner_id) {
-                    return new Response(JSON.stringify({ 
-                        error: "Missing required parameters: userId, spapi_oauth_code, selling_partner_id" 
-                    }), { 
-                        status: 400, 
-                        headers: corsHeaders 
-                    });
-                }
-
                 try {
-                    const tokenData = await exchangeCodeForTokens(spapi_oauth_code, redirect_uri);
+                    const { userId, spapi_oauth_code, selling_partner_id, redirect_uri } = params;
                     
-                    // Bölgeyi selling partner ID'den belirle
-                    const region = selling_partner_id.startsWith('A') ? 'NA' : 
-                                  (selling_partner_id.startsWith('E') ? 'EU' : 'FE');
+                    if (!userId || !spapi_oauth_code || !selling_partner_id) {
+                        return new Response(JSON.stringify({ 
+                            error: "Missing required parameters: userId, spapi_oauth_code, selling_partner_id" 
+                        }), { 
+                            status: 400, 
+                            headers: corsHeaders 
+                        });
+                    }
 
-                    await api.createEntityRecord('UserConnection', {
+                    console.log(`Exchanging code for user ID: ${userId}`);
+                    
+                    const tokens = await exchangeCodeForTokens(spapi_oauth_code, redirect_uri);
+                    const expiresAt = new Date(Date.now() + (tokens.expires_in * 1000));
+                    
+                    const connectionData = {
                         user_id: userId,
-                        region: region,
-                        selling_partner_id: selling_partner_id,
-                        access_token: tokenData.access_token,
-                        refresh_token: tokenData.refresh_token,
-                        token_expires_at: new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString(),
+                        region: 'NA', // Default, could be made configurable
+                        selling_partner_id,
+                        access_token: tokens.access_token,
+                        refresh_token: tokens.refresh_token,
+                        token_expires_at: expiresAt.toISOString(),
                         status: 'active'
-                    });
+                    };
+                    
+                    await api.createEntityRecord('UserConnection', connectionData);
                     
                     return new Response(JSON.stringify({ 
                         success: true, 
-                        message: "Amazon connection successful" 
+                        message: 'Connection created successfully' 
                     }), { headers: corsHeaders });
                     
                 } catch (error) {
                     console.error('Exchange code error:', error);
                     return new Response(JSON.stringify({ 
-                        error: "Failed to exchange authorization code",
-                        details: error.message 
-                    }), { 
-                        status: 500, 
-                        headers: corsHeaders 
-                    });
+                        error: error.message 
+                    }), { status: 500, headers: corsHeaders });
                 }
 
-            // === KULLANICI SİPARİŞLERİNİ SENKRONİZE ET ===
             case 'syncUserOrders':
-                const { userEmail: syncUserEmail, connectionId } = params;
-                
-                if (!syncUserEmail) {
-                    return new Response(JSON.stringify({ error: "userEmail is required" }), { 
-                        status: 400, 
-                        headers: corsHeaders 
-                    });
-                }
-
                 try {
-                    const usersResult = await api.getEntityRecords('User', { email: syncUserEmail });
-                    const users = usersResult.data || [];
+                    const { userId } = params;
                     
-                    if (users.length === 0) {
-                        return new Response(JSON.stringify({ error: "User not found" }), { 
-                            status: 404, 
+                    if (!userId) {
+                        return new Response(JSON.stringify({ error: 'userId parameter is required' }), { 
+                            status: 400, 
                             headers: corsHeaders 
                         });
                     }
-
-                    const currentUser = users[0];
-                    let userConnection;
-
-                    if (connectionId) {
-                        userConnection = await api.getEntityRecord('UserConnection', connectionId);
-                        if (!userConnection || userConnection.user_id !== currentUser.id) {
-                            return new Response(JSON.stringify({ error: "Connection not found or not authorized" }), { 
-                                status: 404, 
-                                headers: corsHeaders 
-                            });
-                        }
-                    } else {
-                        const connectionsResult = await api.getEntityRecords('UserConnection', { 
-                            user_id: currentUser.id, 
-                            status: 'active' 
-                        });
-                        const connections = connectionsResult.data || [];
-                        
-                        if (connections.length === 0) {
-                            return new Response(JSON.stringify({ 
-                                success: true, 
-                                message: "No active Amazon connections found for this user" 
-                            }), { headers: corsHeaders });
-                        }
-                        userConnection = connections[0]; // İlk aktif bağlantıyı kullan
-                    }
-
-                    const results = await syncUserOrdersInternal(api, currentUser.id, userConnection);
                     
-                    return new Response(JSON.stringify({ 
-                        success: true, 
-                        message: `Sync completed successfully`,
-                        ...results
-                    }), { headers: corsHeaders });
-
-                } catch (error) {
-                    console.error('Sync user orders error:', error);
-                    return new Response(JSON.stringify({ 
-                        error: "Failed to sync user orders",
-                        details: error.message 
-                    }), { 
-                        status: 500, 
-                        headers: corsHeaders 
-                    });
-                }
-
-            // === TOPLU SİPARİŞ SENKRONİZASYONU ===
-            case 'syncAllOrders':
-                const { userEmail } = params;
-                
-                if (!userEmail) {
-                    return new Response(JSON.stringify({ error: "userEmail is required" }), { 
-                        status: 400, 
-                        headers: corsHeaders 
-                    });
-                }
-
-                try {
-                    const usersResult = await api.getEntityRecords('User', { email: userEmail });
-                    const users = usersResult.data || [];
+                    console.log(`Syncing orders for user ID: ${userId}`);
                     
-                    if (users.length === 0) {
-                        return new Response(JSON.stringify({ error: "User not found" }), { 
-                            status: 404, 
-                            headers: corsHeaders 
-                        });
-                    }
-
-                    const currentUser = users[0];
-                    if (currentUser.role !== 'system_admin' && currentUser.role !== 'admin') {
+                    // Get user connections
+                    const connections = await api.getEntityRecords('UserConnection', { 
+                        user_id: userId, 
+                        status: 'active' 
+                    });
+                    
+                    if (connections.length === 0) {
                         return new Response(JSON.stringify({ 
-                            error: 'Unauthorized: Only system admins can perform this action' 
-                        }), { 
-                            status: 403, 
-                            headers: corsHeaders 
-                        });
+                            success: true, 
+                            message: 'No active Amazon connections found for user',
+                            totalFound: 0,
+                            totalSynced: 0,
+                            totalUpdated: 0,
+                            connectionsProcessed: 0
+                        }), { status: 200, headers: corsHeaders });
                     }
-
-                    // Tüm aktif bağlantıları al
-                    const connectionsResult = await api.getEntityRecords('UserConnection', { status: 'active' });
-                    const activeConnections = connectionsResult.data || [];
                     
-                    if (activeConnections.length === 0) {
+                    let totalFound = 0, totalSynced = 0, totalUpdated = 0;
+                    
+                    for (const connection of connections) {
+                        const result = await syncUserOrdersInternal(api, userId, connection);
+                        totalFound += result.totalFound;
+                        totalSynced += result.totalSynced;
+                        totalUpdated += result.totalUpdated;
+                    }
+                    
+                    return new Response(JSON.stringify({ 
+                        success: true,
+                        totalFound,
+                        totalSynced,
+                        totalUpdated,
+                        connectionsProcessed: connections.length
+                    }), { headers: corsHeaders });
+                    
+                } catch (error) {
+                    console.error('Sync orders error:', error);
+                    return new Response(JSON.stringify({ 
+                        error: error.message 
+                    }), { status: 500, headers: corsHeaders });
+                }
+
+            case 'syncAllOrders':
+                try {
+                    // Get all active connections
+                    const allConnections = await api.getEntityRecords('UserConnection', { 
+                        status: 'active' 
+                    });
+                    
+                    let processedConnections = 0;
+                    let totalUsersProcessed = 0;
+                    let totalFound = 0, totalSynced = 0, totalUpdated = 0;
+                    
+                    // Group by user_id
+                    const userConnections = {};
+                    for (const conn of allConnections) {
+                        if (!userConnections[conn.user_id]) {
+                            userConnections[conn.user_id] = [];
+                        }
+                        userConnections[conn.user_id].push(conn);
+                    }
+                    
+                    totalUsersProcessed = Object.keys(userConnections).length;
+
+                    if (totalUsersProcessed === 0) {
                         return new Response(JSON.stringify({ 
                             success: true, 
                             message: "No active connections to sync.",
                             processedConnections: 0,
-                            totalConnections: 0,
+                            totalConnections: 0, // This should be allConnections.length
                             totalFound: 0,
                             totalSynced: 0,
                             totalUpdated: 0
                         }), { headers: corsHeaders });
                     }
-
-                    let totalFound = 0, totalSynced = 0, totalUpdated = 0;
-                    let processedConnections = 0;
-
-                    for (const connection of activeConnections) {
+                    
+                    for (const [userId, connectionsForUser] of Object.entries(userConnections)) {
                         try {
-                            const results = await syncUserOrdersInternal(api, connection.user_id, connection);
-                            totalFound += results.found;
-                            totalSynced += results.synced;
-                            totalUpdated += results.updated;
-                            processedConnections++;
+                            console.log(`Processing user ID: ${userId} with ${connectionsForUser.length} connections`);
                             
-                            console.log(`Processed connection ${connection.id}: +${results.synced} new, +${results.updated} updated`);
+                            for (const connection of connectionsForUser) {
+                                const result = await syncUserOrdersInternal(api, userId, connection);
+                                totalFound += result.totalFound;
+                                totalSynced += result.totalSynced;
+                                totalUpdated += result.totalUpdated;
+                            }
+                            
+                            processedConnections++;
                         } catch (error) {
-                            console.error(`Failed to sync connection ${connection.id}:`, error.message);
+                            console.error(`Failed to sync user ID ${userId}:`, error.message);
                         }
                     }
-
+                    
                     return new Response(JSON.stringify({ 
-                        success: true, 
-                        message: "Bulk sync completed",
-                        processedConnections,
-                        totalConnections: activeConnections.length,
+                        success: true,
+                        processedConnections: processedConnections, // number of distinct users processed
+                        totalConnections: allConnections.length, // total number of connections found
                         totalFound,
                         totalSynced,
                         totalUpdated
                     }), { headers: corsHeaders });
-
+                    
                 } catch (error) {
                     console.error('Sync all orders error:', error);
                     return new Response(JSON.stringify({ 
-                        error: "Failed to sync all orders",
-                        details: error.message 
-                    }), { 
-                        status: 500, 
-                        headers: corsHeaders 
-                    });
+                        error: error.message 
+                    }), { status: 500, headers: corsHeaders });
                 }
 
-            // === DEBUG: VERITABANI DURUMU KONTROLÜ ===
-            case 'debug':
-                const { userEmail: debugUserEmail } = params;
-                if (!debugUserEmail) {
-                    return new Response(JSON.stringify({ error: "userEmail is required for debug" }), { 
-                        status: 400, 
-                        headers: corsHeaders 
-                    });
-                }
-
-                try {
-                    const allConnectionsResult = await api.getEntityRecords('UserConnection');
-                    const allUsersResult = await api.getEntityRecords('User');
-                    const targetUserResult = await api.getEntityRecords('User', { email: debugUserEmail });
-
-                    return new Response(JSON.stringify({
-                        success: true,
-                        debug_info: {
-                            total_users: allUsersResult.data?.length || 0,
-                            target_user: targetUserResult.data?.[0] || 'Not found',
-                            total_connections: allConnectionsResult.data?.length || 0,
-                            connections: allConnectionsResult.data || [],
-                            sample_connection: allConnectionsResult.data?.[0] || 'No connections exist',
-                            environment: {
-                                hasAppId: !!appId,
-                                hasApiKey: !!apiKey,
-                                hasDenoKey: !!Deno.env.get("DENO_API_KEY"), // Original outline kept this as DENO_API_KEY, adhering to instruction.
-                                hasAmazonClientId: !!Deno.env.get("AMAZON_CLIENT_ID"),
-                                hasAmazonSecret: !!Deno.env.get("AMAZON_CLIENT_SECRET")
-                            }
-                        }
-                    }), { headers: corsHeaders });
-                } catch (debugError) {
-                    return new Response(JSON.stringify({
-                        success: false,
-                        debug_error: debugError.message,
-                        stack: debugError.stack
-                    }), { headers: corsHeaders });
-                }
-                
             default:
-                return new Response(JSON.stringify({ error: `Invalid action: ${action}` }), { 
-                    status: 400, 
-                    headers: corsHeaders 
-                });
+                return new Response(JSON.stringify({ 
+                    error: 'Unknown action',
+                    availableActions: ['exchangeCodeForTokens', 'syncUserOrders', 'syncAllOrders']
+                }), { status: 400, headers: corsHeaders });
         }
-        
+
     } catch (error) {
-        console.error(`Deno Function Error:`, error);
+        console.error('Main function error:', error);
         return new Response(JSON.stringify({ 
-            error: "An internal server error occurred in Deno Deploy function.",
-            details: error.message,
-            stack: error.stack
-        }), { 
-            status: 500, 
-            headers: corsHeaders 
-        });
+            error: 'Internal server error', 
+            message: error.message 
+        }), { status: 500, headers: corsHeaders });
     }
 });
