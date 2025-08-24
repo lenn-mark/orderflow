@@ -279,7 +279,8 @@ Deno.serve(async (req) => {
 
         // *** SDK 0.6.0 İÇİN DÜZELTME: Daha açık client başlatma ***
         const base44 = createClientFromRequest(req);
-        
+        return new Response(JSON.stringify({ base44 }));
+
         // Service role için gerekli token'ı manuel olarak ayarlıyoruz
         const serviceToken = Deno.env.get("BASE44_API_KEY");
         if (!serviceToken) {
@@ -522,9 +523,7 @@ Deno.serve(async (req) => {
                         headers: corsHeaders 
                     });
                 }
-
-                return new Response(JSON.stringify({ db }));
-
+                
                 const allConnections = await db.UserConnection.list();
                 const allUsers = await db.User.list();
                 const targetUser = await db.User.filter({ email: debugUserEmail });
