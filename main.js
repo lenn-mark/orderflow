@@ -18,7 +18,11 @@ function authenticateRequest(req) {
     }
 
     const providedKey = authHeader.substring(7);
-    return providedKey === expectedApiKey;
+    return {
+     providedKey,
+     expectedApiKey,
+     isCorrect : providedKey === expectedApiKey
+    };
 }
 
 // --- ANA FONKSİYON ---
@@ -38,7 +42,7 @@ Deno.serve(async (req) => {
 
     // 1. Güvenlik Kontrolü
     const authRequest = await authenticateRequest(req);
-    if (!authRequest) {
+    if (!authRequest.isCorrect) {
         return new Response(JSON.stringify({ error: "Unauthorized", fromHere : true, authRequest }), { 
             status: 401, 
             headers: corsHeaders 
