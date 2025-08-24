@@ -1,6 +1,6 @@
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
-    const expectedApiKey = Deno.env.get("DENO_API_KEY");
+    const expectedApiKey = Deno.env.get("BASE44_API_KEY");
     if (!expectedApiKey) {
         const message = "CRITICAL: DENO_API_KEY environment variable is not set on Deno Deploy!";
         console.error(message);
@@ -10,7 +10,7 @@ function authenticateRequest(req) {
         };
     }
     
-    const authHeader = req.headers.get("Authorization");
+    const authHeader = req.headers.get("Base44-Service-Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
         const message = "No Authorization header found or it does not start with 'Bearer '";
         return {
