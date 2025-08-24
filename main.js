@@ -382,6 +382,13 @@ Deno.serve(async (req) => {
                     const currentUser = users[0];
                     let userConnection;
 
+                    return new Response(JSON.stringify({ 
+                       currentUser
+                    }), { 
+                        status: 200, 
+                        headers: corsHeaders 
+                    });
+
                     if (connectionId) {
                         userConnection = await db.UserConnection.get(connectionId);
                         if (!userConnection || userConnection.user_id !== currentUser.id) {
@@ -416,7 +423,7 @@ Deno.serve(async (req) => {
                     console.error('Sync user orders error:', error);
                     return new Response(JSON.stringify({ 
                         error: "Failed to sync user orders",
-                        details: error.message 
+                        details: error.message,
                     }), { 
                         status: 500, 
                         headers: corsHeaders 
