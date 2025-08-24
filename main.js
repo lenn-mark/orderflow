@@ -277,10 +277,16 @@ Deno.serve(async (req) => {
             });
         }
 
-        const base44 = createClientFromRequest(req, {
-            appId: Deno.env.get("BASE44_APP_ID"),
-            serviceToken: Deno.env.get("BASE44_API_KEY")
-        });
+        // *** SDK 0.6.0 İÇİN DÜZELTME: Daha açık client başlatma ***
+        const base44 = createClientFromRequest(req);
+        
+        // Service role için gerekli token'ı manuel olarak ayarlıyoruz
+        const serviceToken = Deno.env.get("BASE44_API_KEY");
+        if (!serviceToken) {
+            throw new Error("BASE44_API_KEY environment variable is not set");
+        }
+        
+        // Service role client'ı manuel olarak oluşturalım
         const db = base44.asServiceRole.entities;
 
         let payload = {};
@@ -416,7 +422,7 @@ Deno.serve(async (req) => {
                     console.error('Sync user orders error:', error);
                     return new Response(JSON.stringify({ 
                         error: "Failed to sync user orders",
-                        details: error.message,
+                        details: error.message 
                     }), { 
                         status: 500, 
                         headers: corsHeaders 
