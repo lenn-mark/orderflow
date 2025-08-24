@@ -333,7 +333,7 @@ async function syncUserOrdersInternal(api, userId, connection) {
         }
     }
 
-    return { totalFound, totalSynced, totalUpdated };
+    return { totalFound, totalSynced, totalUpdated, ordersResponse };
 }
 
 // --- ANA DENO FONKSİYONU ---
