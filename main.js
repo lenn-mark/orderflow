@@ -523,6 +523,8 @@ Deno.serve(async (req) => {
                     });
                 }
 
+                return new Response(JSON.stringify({ db }));
+
                 const allConnections = await db.UserConnection.list();
                 const allUsers = await db.User.list();
                 const targetUser = await db.User.filter({ email: debugUserEmail });
