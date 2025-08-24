@@ -4,17 +4,28 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.5.0';
 function authenticateRequest(req) {
     const expectedApiKey = Deno.env.get("DENO_API_KEY");
     if (!expectedApiKey) {
-        console.error("CRITICAL: DENO_API_KEY environment variable is not set on Deno Deploy!");
-        return false;
+        const message = "CRITICAL: DENO_API_KEY environment variable is not set on Deno Deploy!";
+        return {
+            message,
+            isCorrect : false
+        }
     }
     
     const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return false;
+        const message = "No authorization in header";
+        return {
+            message,
+            isCorrect : false
+        }
     }
 
     const providedKey = authHeader.substring(7);
-    return providedKey === expectedApiKey;
+    return {
+     providedKey,
+     expectedApiKey,
+     isCorrect : providedKey === expectedApiKey 
+    };
 }
 
 // --- AMAZON SP-API HELPER FUNCTIONS ---
@@ -86,8 +97,9 @@ Deno.serve(async (req) => {
     }
 
     try {
-        if (!authenticateRequest(req)) {
-            return new Response(JSON.stringify({ error: "Unauthorized" }), { 
+        const authRequest = await authenticateRequest(req);
+        if (!authRequest.isCorrect) {
+            return new Response(JSON.stringify({ error: "Unauthorized", authRequest }), { 
                 status: 401, 
                 headers: corsHeaders 
             });
