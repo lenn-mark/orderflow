@@ -1,9 +1,6 @@
-
-import { createClient } from 'npm:@base44/sdk@0.6.0';
-
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
-    const expectedApiKey = Deno.env.get("BASE44_API_KEY"); // Changed to DENO_API_KEY as per outline
+    const expectedApiKey = Deno.env.get("DENO_API_KEY");
     if (!expectedApiKey) {
         const message = "CRITICAL: DENO_API_KEY environment variable is not set on Deno Deploy!";
         console.error(message);
@@ -13,7 +10,7 @@ function authenticateRequest(req) {
         };
     }
     
-    const authHeader = req.headers.get("Base44-Service-Authorization"); // Changed header name as per outline
+    const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
         const message = "No Authorization header found or it does not start with 'Bearer '";
         return {
@@ -34,6 +31,75 @@ function authenticateRequest(req) {
         expectedApiKey,
         isCorrect
     };
+}
+
+// --- BASE44 API HELPER CLASS ---
+class Base44API {
+    constructor(appId, apiKey) {
+        this.appId = appId;
+        this.apiKey = apiKey;
+        this.baseUrl = `https://app.base44.com/api/apps/${appId}`;
+    }
+
+    async request(endpoint, method = 'GET', body = null) {
+        const url = `${this.baseUrl}${endpoint}`;
+        const options = {
+            method,
+            headers: {
+                'api_key': this.apiKey,
+                'Content-Type': 'application/json'
+            }
+        };
+
+        if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+            options.body = JSON.stringify(body);
+        }
+
+        console.log(`Making API request: ${method} ${url}`);
+        const response = await fetch(url, options);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Base44 API Error: ${response.status} - ${errorText}`);
+        }
+        
+        return response.json();
+    }
+
+    // Entity operations
+    async getEntityRecords(entityName, filters = {}, sort = null, limit = null, offset = null) {
+        let query = `/entities/${entityName}`;
+        const params = new URLSearchParams();
+        
+        if (Object.keys(filters).length > 0) {
+            params.append('filters', JSON.stringify(filters));
+        }
+        if (sort) params.append('sort', sort);
+        if (limit) params.append('limit', limit.toString());
+        if (offset) params.append('offset', offset.toString());
+        
+        if (params.toString()) {
+            query += `?${params.toString()}`;
+        }
+        
+        return this.request(query);
+    }
+
+    async createEntityRecord(entityName, data) {
+        return this.request(`/entities/${entityName}`, 'POST', data);
+    }
+
+    async updateEntityRecord(entityName, recordId, data) {
+        return this.request(`/entities/${entityName}/${recordId}`, 'PATCH', data);
+    }
+
+    async getEntityRecord(entityName, recordId) {
+        return this.request(`/entities/${entityName}/${recordId}`);
+    }
+
+    async deleteEntityRecord(entityName, recordId) {
+        return this.request(`/entities/${entityName}/${recordId}`, 'DELETE');
+    }
 }
 
 // --- AMAZON SP-API HELPER FUNCTIONS ---
@@ -114,7 +180,6 @@ async function makeAmazonAPIRequest(endpoint, accessToken, region = 'NA') {
     return response.json();
 }
 
-// --- AMAZON ORDER ITEMS FETCHER ---
 async function fetchOrderItems(amazonOrderId, accessToken, region) {
     try {
         const endpoint = `/orders/v0/orders/${amazonOrderId}/orderItems`;
@@ -126,8 +191,8 @@ async function fetchOrderItems(amazonOrderId, accessToken, region) {
     }
 }
 
-// --- SİPARİŞ SENKRONİZASYON İÇ FONKSİYONU ---
-async function syncUserOrdersInternal(db, userId, connection) {
+// --- SİPARİŞ SENKRONİZASYON FONKSİYONU ---
+async function syncUserOrdersInternal(api, userId, connection) {
     console.log(`Starting order sync for user: ${userId}, connection: ${connection.id}`);
     
     let currentAccessToken = connection.access_token;
@@ -139,7 +204,7 @@ async function syncUserOrdersInternal(db, userId, connection) {
             const newTokens = await getAmazonAccessToken(connection.refresh_token);
             currentAccessToken = newTokens.access_token;
             
-            await db.UserConnection.update(connection.id, {
+            await api.updateEntityRecord('UserConnection', connection.id, {
                 access_token: newTokens.access_token,
                 token_expires_at: new Date(Date.now() + (newTokens.expires_in || 3600) * 1000).toISOString()
             });
@@ -147,13 +212,18 @@ async function syncUserOrdersInternal(db, userId, connection) {
             console.log('Access token refreshed successfully');
         } catch (tokenError) {
             console.error('Token refresh failed:', tokenError);
-            await db.UserConnection.update(connection.id, { status: 'error' });
+            await api.updateEntityRecord('UserConnection', connection.id, { status: 'error' });
             throw new Error(`Token refresh failed for connection ${connection.id}: ${tokenError.message}`);
         }
     }
 
     // Kullanıcının aktif marketplaces'lerini al
-    const marketplaces = await db.UserMarketplace.filter({ user_id: userId, is_active: true });
+    const marketplacesResult = await api.getEntityRecords('UserMarketplace', { 
+        user_id: userId, 
+        is_active: true 
+    });
+    const marketplaces = marketplacesResult.data || [];
+    
     if (marketplaces.length === 0) {
         console.log('No active marketplaces found for user');
         return { found: 0, synced: 0, updated: 0 };
@@ -173,7 +243,8 @@ async function syncUserOrdersInternal(db, userId, connection) {
     console.log(`Found ${amazonOrders.length} orders from Amazon`);
 
     // Mevcut siparişleri kontrol et
-    const existingOrders = await db.Order.filter({ created_by: userId });
+    const existingOrdersResult = await api.getEntityRecords('Order', { created_by: userId });
+    const existingOrders = existingOrdersResult.data || [];
     const existingOrderIds = new Set(existingOrders.map(o => o.amazon_order_id));
     
     let syncedCount = 0, updatedCount = 0;
@@ -190,7 +261,7 @@ async function syncUserOrdersInternal(db, userId, connection) {
                     existing.order_status !== amazonOrder.OrderStatus ||
                     existing.number_of_items_shipped !== amazonOrder.NumberOfItemsShipped
                 )) {
-                    await db.Order.update(existing.id, {
+                    await api.updateEntityRecord('Order', existing.id, {
                         order_status: amazonOrder.OrderStatus,
                         last_update_date: amazonOrder.LastUpdateDate,
                         number_of_items_shipped: amazonOrder.NumberOfItemsShipped || 0,
@@ -210,7 +281,7 @@ async function syncUserOrdersInternal(db, userId, connection) {
                 }
             } else {
                 // Yeni sipariş - ekle
-                await db.Order.create({
+                await api.createEntityRecord('Order', {
                     created_by: userId,
                     amazon_order_id: amazonOrder.AmazonOrderId,
                     purchase_date: amazonOrder.PurchaseDate,
@@ -241,7 +312,6 @@ async function syncUserOrdersInternal(db, userId, connection) {
             }
         } catch (orderError) {
             console.error(`Failed to process order ${amazonOrder.AmazonOrderId}:`, orderError.message);
-            // Tek sipariş hatası tüm sync'i durdurmasın, devam et
         }
     }
     
@@ -278,27 +348,15 @@ Deno.serve(async (req) => {
             });
         }
 
-        // *** SDK 0.6.0 İÇİN TAMAMEN YENİ CLIENT YARATMA ***
+        // Base44 API client'ını oluştur
         const appId = Deno.env.get("BASE44_APP_ID");
-        const serviceToken = Deno.env.get("BASE44_API_KEY");
+        const apiKey = Deno.env.get("BASE44_API_KEY");
         
-        if (!appId || !serviceToken) {
+        if (!appId || !apiKey) {
             throw new Error("BASE44_APP_ID or BASE44_API_KEY environment variables are not set");
         }
 
-        console.log("Creating Base44 client with:", { appId: appId.substring(0, 8) + "...", hasServiceToken: !!serviceToken });
-        
-        const base44 = await createClient({
-            serverUrl : "https://app.base44.com",
-            appId: appId,
-            serviceToken: serviceToken,
-            requiresAuth : true            
-        });
-
-          return new Response(JSON.stringify({ base44 }));
-        
-        // Service role erişimi için doğrudan entities kullan
-        const db = base44.entities;
+        const api = new Base44API(appId, apiKey);
 
         let payload = {};
         try {
@@ -317,11 +375,10 @@ Deno.serve(async (req) => {
         switch (action) {
             // === TEST FONKSİYONU ===
             case 'test':
-                // Test etmek için basit bir DB sorgusu yapalım
                 let testResult = "DB connection failed";
                 try {
-                    const testUsers = await db.User.list('-created_date', 1);
-                    testResult = `DB connected, found ${testUsers.length} users`;
+                    const usersResult = await api.getEntityRecords('User', {}, '-created_date', 1);
+                    testResult = `DB connected, found ${usersResult.data?.length || 0} users`;
                 } catch (dbError) {
                     testResult = `DB error: ${dbError.message}`;
                 }
@@ -332,8 +389,8 @@ Deno.serve(async (req) => {
                     timestamp: new Date().toISOString(),
                     dbTest: testResult,
                     environment: {
-                        hasAppId: !!Deno.env.get("BASE44_APP_ID"),
-                        hasApiKey: !!Deno.env.get("BASE44_API_KEY"),
+                        hasAppId: !!appId,
+                        hasApiKey: !!apiKey,
                         hasDenoKey: !!Deno.env.get("DENO_API_KEY"),
                         hasAmazonClientId: !!Deno.env.get("AMAZON_CLIENT_ID"),
                         hasAmazonSecret: !!Deno.env.get("AMAZON_CLIENT_SECRET")
@@ -360,7 +417,7 @@ Deno.serve(async (req) => {
                     const region = selling_partner_id.startsWith('A') ? 'NA' : 
                                   (selling_partner_id.startsWith('E') ? 'EU' : 'FE');
 
-                    await db.UserConnection.create({
+                    await api.createEntityRecord('UserConnection', {
                         user_id: userId,
                         region: region,
                         selling_partner_id: selling_partner_id,
@@ -398,8 +455,10 @@ Deno.serve(async (req) => {
                 }
 
                 try {
-                    const users = await db.User.filter({ email: syncUserEmail });
-                    if (!users || users.length === 0) {
+                    const usersResult = await api.getEntityRecords('User', { email: syncUserEmail });
+                    const users = usersResult.data || [];
+                    
+                    if (users.length === 0) {
                         return new Response(JSON.stringify({ error: "User not found" }), { 
                             status: 404, 
                             headers: corsHeaders 
@@ -410,7 +469,7 @@ Deno.serve(async (req) => {
                     let userConnection;
 
                     if (connectionId) {
-                        userConnection = await db.UserConnection.get(connectionId);
+                        userConnection = await api.getEntityRecord('UserConnection', connectionId);
                         if (!userConnection || userConnection.user_id !== currentUser.id) {
                             return new Response(JSON.stringify({ error: "Connection not found or not authorized" }), { 
                                 status: 404, 
@@ -418,10 +477,12 @@ Deno.serve(async (req) => {
                             });
                         }
                     } else {
-                        const connections = await db.UserConnection.filter({ 
+                        const connectionsResult = await api.getEntityRecords('UserConnection', { 
                             user_id: currentUser.id, 
                             status: 'active' 
                         });
+                        const connections = connectionsResult.data || [];
+                        
                         if (connections.length === 0) {
                             return new Response(JSON.stringify({ 
                                 success: true, 
@@ -431,7 +492,7 @@ Deno.serve(async (req) => {
                         userConnection = connections[0]; // İlk aktif bağlantıyı kullan
                     }
 
-                    const results = await syncUserOrdersInternal(db, currentUser.id, userConnection);
+                    const results = await syncUserOrdersInternal(api, currentUser.id, userConnection);
                     
                     return new Response(JSON.stringify({ 
                         success: true, 
@@ -450,7 +511,7 @@ Deno.serve(async (req) => {
                     });
                 }
 
-            // === TOPLU SİPARİŞ SENKRONİZASYONU (SADECE SİSTEM ADMİNLERİ) ===
+            // === TOPLU SİPARİŞ SENKRONİZASYONU ===
             case 'syncAllOrders':
                 const { userEmail } = params;
                 
@@ -462,8 +523,10 @@ Deno.serve(async (req) => {
                 }
 
                 try {
-                    const users = await db.User.filter({ email: userEmail });
-                    if (!users || users.length === 0) {
+                    const usersResult = await api.getEntityRecords('User', { email: userEmail });
+                    const users = usersResult.data || [];
+                    
+                    if (users.length === 0) {
                         return new Response(JSON.stringify({ error: "User not found" }), { 
                             status: 404, 
                             headers: corsHeaders 
@@ -481,7 +544,8 @@ Deno.serve(async (req) => {
                     }
 
                     // Tüm aktif bağlantıları al
-                    const activeConnections = await db.UserConnection.filter({ status: 'active' });
+                    const connectionsResult = await api.getEntityRecords('UserConnection', { status: 'active' });
+                    const activeConnections = connectionsResult.data || [];
                     
                     if (activeConnections.length === 0) {
                         return new Response(JSON.stringify({ 
@@ -500,7 +564,7 @@ Deno.serve(async (req) => {
 
                     for (const connection of activeConnections) {
                         try {
-                            const results = await syncUserOrdersInternal(db, connection.user_id, connection);
+                            const results = await syncUserOrdersInternal(api, connection.user_id, connection);
                             totalFound += results.found;
                             totalSynced += results.synced;
                             totalUpdated += results.updated;
@@ -543,31 +607,35 @@ Deno.serve(async (req) => {
                     });
                 }
 
-                const allConnections = await db.UserConnection.list();
-                const allUsers = await db.User.list();
-                const targetUser = await db.User.filter({ email: debugUserEmail });
+                try {
+                    const allConnectionsResult = await api.getEntityRecords('UserConnection');
+                    const allUsersResult = await api.getEntityRecords('User');
+                    const targetUserResult = await api.getEntityRecords('User', { email: debugUserEmail });
 
-                return new Response(JSON.stringify({
-                    success: true,
-                    debug_info: {
-                        total_users: allUsers.length,
-                        target_user: targetUser[0] || 'Not found',
-                        total_connections: allConnections.length,
-                        connections: allConnections,
-                        sample_connection: allConnections[0] || 'No connections exist',
-                        client_info: { // Added client_info as per outline
-                            hasEntities: !!db,
-                            entitiesKeys: Object.keys(db)
-                        },
-                        environment: {
-                            hasAppId: !!Deno.env.get("BASE44_APP_ID"),
-                            hasApiKey: !!Deno.env.get("BASE44_API_KEY"),
-                            hasDenoKey: !!Deno.env.get("DENO_API_KEY"),
-                            hasAmazonClientId: !!Deno.env.get("AMAZON_CLIENT_ID"),
-                            hasAmazonSecret: !!Deno.env.get("AMAZON_CLIENT_SECRET")
+                    return new Response(JSON.stringify({
+                        success: true,
+                        debug_info: {
+                            total_users: allUsersResult.data?.length || 0,
+                            target_user: targetUserResult.data?.[0] || 'Not found',
+                            total_connections: allConnectionsResult.data?.length || 0,
+                            connections: allConnectionsResult.data || [],
+                            sample_connection: allConnectionsResult.data?.[0] || 'No connections exist',
+                            environment: {
+                                hasAppId: !!appId,
+                                hasApiKey: !!apiKey,
+                                hasDenoKey: !!Deno.env.get("DENO_API_KEY"),
+                                hasAmazonClientId: !!Deno.env.get("AMAZON_CLIENT_ID"),
+                                hasAmazonSecret: !!Deno.env.get("AMAZON_CLIENT_SECRET")
+                            }
                         }
-                    }
-                }), { headers: corsHeaders });
+                    }), { headers: corsHeaders });
+                } catch (debugError) {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        debug_error: debugError.message,
+                        stack: debugError.stack
+                    }), { headers: corsHeaders });
+                }
                 
             default:
                 return new Response(JSON.stringify({ error: `Invalid action: ${action}` }), { 
