@@ -289,10 +289,13 @@ Deno.serve(async (req) => {
         console.log("Creating Base44 client with:", { appId: appId.substring(0, 8) + "...", hasServiceToken: !!serviceToken });
         
         const base44 = createClient({
+            serverUrl : "https://app.base44.com",
             appId: appId,
             serviceToken: serviceToken,
-            // SDK 0.6.0'da bu şekilde yapılandırma gerekebilir
+            requiresAuth : true            
         });
+
+          return new Response(JSON.stringify({ base44 }));
         
         // Service role erişimi için doğrudan entities kullan
         const db = base44.entities;
