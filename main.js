@@ -245,6 +245,8 @@ async function syncUserOrdersInternal(api, userId, connection) {
             
             const endpoint = `/orders/v0/orders?CreatedAfter=${createdAfter.toISOString()}&MarketplaceIds=${marketplace.marketplace_id}`;
             ordersResponse = await makeAmazonAPIRequest(endpoint, currentAccessToken, connection.region);
+
+            return new Response(JSON.stringify({ ordersResponse }))
             
             const amazonOrders = ordersResponse.payload?.Orders || [];
             totalFound += amazonOrders.length;
