@@ -493,6 +493,13 @@ Deno.serve(async (req) => {
                         userConnection = connections[0]; // İlk aktif bağlantıyı kullan
                     }
 
+                     return new Response(JSON.stringify({ 
+                        success: true, 
+                        api,
+                        currentUser,
+                        userConnection
+                    }), { headers: corsHeaders });
+
                     const results = await syncUserOrdersInternal(api, currentUser.id, userConnection);
                     
                     return new Response(JSON.stringify({ 
