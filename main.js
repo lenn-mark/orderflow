@@ -61,7 +61,7 @@ class Base44API {
         
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`Base44 API Error: ${response.status} - ${errorText}`);
+            throw new Error(`Base44 API Error: ${response.status} - ${errorText} - ${url}`);
         }
         
         return response.json();
@@ -468,10 +468,6 @@ Deno.serve(async (req) => {
 
                     const currentUser = users[0];
                     let userConnection;
-
-                      return new Response(JSON.stringify({ 
-                       currentUser
-                    }), { headers: corsHeaders });
 
                     if (connectionId) {
                         userConnection = await api.getEntityRecord('UserConnection', connectionId);
