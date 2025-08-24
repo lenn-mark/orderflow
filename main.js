@@ -199,7 +199,7 @@ Deno.serve(async (req) => {
 
             // === TEK KULLANICI SİPARİŞ SENKRONİZASYONU ===
             case 'syncUserOrders':
-                const { userId, connectionId } = params;
+                 const { userId, connectionId } = params;
                 if (!userId) {
                     return new Response(JSON.stringify({ error: "userId is required" }), { 
                         status: 400, 
@@ -208,9 +208,21 @@ Deno.serve(async (req) => {
                 }
 
                 let userConnection;
+                // *** DÜZELTME: 'undefined' string kontrolü ve ID varlığı kontrolü birleştirildi ***
                 if (connectionId) {
-                    userConnection = await db.UserConnection.get(connectionId);
+                    try {
+                        userConnection = await db.UserConnection.get(connectionId);
+                    } catch (error) {
+                        console.error(`Error getting connection ${connectionId}:`, error);
+                        return new Response(JSON.stringify({ 
+                            error: `Connection with ID ${connectionId} not found.`
+                        }), { 
+                            status: 404, 
+                            headers: corsHeaders 
+                        });
+                    }
                 } else {
+                    // Eğer connectionId verilmemişse, kullanıcının ilk aktif bağlantısını bul
                     const connections = await db.UserConnection.filter({ 
                         user_id: userId, 
                         status: 'active' 
@@ -219,7 +231,10 @@ Deno.serve(async (req) => {
                 }
 
                 if (!userConnection) {
-                    return new Response(JSON.stringify({ error: "Active connection not found" }), { 
+                    return new Response(JSON.stringify({ 
+                        error: "Active connection not found for user.", 
+                        userId, 
+                    }), { 
                         status: 404, 
                         headers: corsHeaders 
                     });
