@@ -288,7 +288,7 @@ Deno.serve(async (req) => {
 
         console.log("Creating Base44 client with:", { appId: appId.substring(0, 8) + "...", hasServiceToken: !!serviceToken });
         
-        const base44 = createClient({
+        const base44 = await createClient({
             serverUrl : "https://app.base44.com",
             appId: appId,
             serviceToken: serviceToken,
