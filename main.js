@@ -32,7 +32,7 @@ Deno.serve(async (req) => {
 
     try {
         if (!authenticateRequest(req)) {
-            return new Response(JSON.stringify({ error: "Unauthorized" }), { 
+            return new Response(JSON.stringify({ error: "Unauthorized", fromHere: true }), { 
                 status: 401, 
                 headers: corsHeaders 
             });
