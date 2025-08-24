@@ -5,6 +5,12 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.5.0';
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
     const expectedApiKey = Deno.env.get("BASE44_API_KEY");
+
+    return new Response(JSON.stringify({ error: "key", fromHere : expectedApiKey }), { 
+            status: 401, 
+            headers: corsHeaders 
+        });
+    
     if (!expectedApiKey) {
         console.error("CRITICAL: BASE44_API_KEY environment variable is not set!");
         return false;
