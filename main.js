@@ -107,7 +107,7 @@ Deno.serve(async (req) => {
 
         const base44 = createClientFromRequest(req, {
             appId: Deno.env.get("BASE44_APP_ID"),
-            apiKey: Deno.env.get("BASE44_API_KEY")
+            serviceToken: Deno.env.get("BASE44_API_KEY")
         });
         const db = base44.asServiceRole.entities;
 
