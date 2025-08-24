@@ -2,7 +2,7 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.6.0';
 
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
-    const expectedApiKey = Deno.env.get("DENO_API_KEY");
+    const expectedApiKey = Deno.env.get("BASE44_API_KEY");
     if (!expectedApiKey) {
         const message = "CRITICAL: DENO_API_KEY environment variable is not set on Deno Deploy!";
         console.error(message);
