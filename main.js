@@ -1,8 +1,9 @@
-import { createClient } from 'npm:@base44/sdk';
+
+import { createClient } from 'npm:@base44/sdk@0.6.0';
 
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
-    const expectedApiKey = Deno.env.get("BASE44_API_KEY");
+    const expectedApiKey = Deno.env.get("DENO_API_KEY"); // Changed to DENO_API_KEY as per outline
     if (!expectedApiKey) {
         const message = "CRITICAL: DENO_API_KEY environment variable is not set on Deno Deploy!";
         console.error(message);
@@ -12,7 +13,7 @@ function authenticateRequest(req) {
         };
     }
     
-    const authHeader = req.headers.get("Base44-Service-Authorization");
+    const authHeader = req.headers.get("Authorization"); // Changed header name as per outline
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
         const message = "No Authorization header found or it does not start with 'Bearer '";
         return {
@@ -277,20 +278,24 @@ Deno.serve(async (req) => {
             });
         }
 
-        // *** SDK 0.6.0 İÇİN DÜZELTME: Daha açık client başlatma ***
-        const base44 = createClient({
-            appId: Deno.env.get("BASE44_APP_ID"),
-            serviceToken : Deno.env.get("BASE44_API_KEY")
-        });
-        return new Response(JSON.stringify({ base44 }));
-        // Service role için gerekli token'ı manuel olarak ayarlıyoruz
+        // *** SDK 0.6.0 İÇİN TAMAMEN YENİ CLIENT YARATMA ***
+        const appId = Deno.env.get("BASE44_APP_ID");
         const serviceToken = Deno.env.get("BASE44_API_KEY");
-        if (!serviceToken) {
-            throw new Error("BASE44_API_KEY environment variable is not set");
-        }
         
-        // Service role client'ı manuel olarak oluşturalım
-        const db = base44.asServiceRole.entities;
+        if (!appId || !serviceToken) {
+            throw new Error("BASE44_APP_ID or BASE44_API_KEY environment variables are not set");
+        }
+
+        console.log("Creating Base44 client with:", { appId: appId.substring(0, 8) + "...", hasServiceToken: !!serviceToken });
+        
+        const base44 = createClient({
+            appId: appId,
+            serviceToken: serviceToken,
+            // SDK 0.6.0'da bu şekilde yapılandırma gerekebilir
+        });
+        
+        // Service role erişimi için doğrudan entities kullan
+        const db = base44.entities;
 
         let payload = {};
         try {
@@ -309,10 +314,20 @@ Deno.serve(async (req) => {
         switch (action) {
             // === TEST FONKSİYONU ===
             case 'test':
+                // Test etmek için basit bir DB sorgusu yapalım
+                let testResult = "DB connection failed";
+                try {
+                    const testUsers = await db.User.list('-created_date', 1);
+                    testResult = `DB connected, found ${testUsers.length} users`;
+                } catch (dbError) {
+                    testResult = `DB error: ${dbError.message}`;
+                }
+
                 return new Response(JSON.stringify({
                     success: true,
                     message: "Deno function is working perfectly!",
                     timestamp: new Date().toISOString(),
+                    dbTest: testResult,
                     environment: {
                         hasAppId: !!Deno.env.get("BASE44_APP_ID"),
                         hasApiKey: !!Deno.env.get("BASE44_API_KEY"),
@@ -491,7 +506,6 @@ Deno.serve(async (req) => {
                             console.log(`Processed connection ${connection.id}: +${results.synced} new, +${results.updated} updated`);
                         } catch (error) {
                             console.error(`Failed to sync connection ${connection.id}:`, error.message);
-                            // Bir bağlantı başarısız olursa devam et
                         }
                     }
 
@@ -526,7 +540,7 @@ Deno.serve(async (req) => {
                     });
                 }
 
-                const allConnections = await db.UserConnection.list();        
+                const allConnections = await db.UserConnection.list();
                 const allUsers = await db.User.list();
                 const targetUser = await db.User.filter({ email: debugUserEmail });
 
@@ -538,6 +552,10 @@ Deno.serve(async (req) => {
                         total_connections: allConnections.length,
                         connections: allConnections,
                         sample_connection: allConnections[0] || 'No connections exist',
+                        client_info: { // Added client_info as per outline
+                            hasEntities: !!db,
+                            entitiesKeys: Object.keys(db)
+                        },
                         environment: {
                             hasAppId: !!Deno.env.get("BASE44_APP_ID"),
                             hasApiKey: !!Deno.env.get("BASE44_API_KEY"),
