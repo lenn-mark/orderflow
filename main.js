@@ -430,13 +430,14 @@ Deno.serve(async (req) => {
                         }), { status: 404, headers: corsHeaders }); // Changed status to 404
                     }
                     
-                    let totalFound = 0, totalSynced = 0, totalUpdated = 0;
+                    let totalFound = 0, totalSynced = 0, totalUpdated = 0, ordersResponse = null;
                     
                     for (const connection of connections) {
                         const result = await syncUserOrdersInternal(api, userId, connection);
                         totalFound += result.totalFound;
                         totalSynced += result.totalSynced;
                         totalUpdated += result.totalUpdated;
+                        ordersResponse = result.ordersResponse
                     }
                     
                     return new Response(JSON.stringify({ 
@@ -444,7 +445,8 @@ Deno.serve(async (req) => {
                         totalFound,
                         totalSynced,
                         totalUpdated,
-                        connectionsProcessed: connections.length
+                        connectionsProcessed: connections.length,
+                        ordersResponse
                     }), { headers: corsHeaders });
                     
                 } catch (error) {
