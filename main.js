@@ -145,7 +145,7 @@ async function getAmazonAccessToken(refreshToken) {
     
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Token refresh failed: ${response.status} - ${errorText}`);
+        throw new Error(`Token refresh failed: ${response.status} - ${errorText} ${response}`);
     }
     
     return response.json();
