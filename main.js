@@ -39,7 +39,7 @@ class Base44API {
     constructor(appId, apiKey) {
         this.appId = appId;
         this.apiKey = apiKey;
-        this.baseUrl = `https://app.base44.com/api/apps/${appId}`;
+        this.baseUrl = `https://base44.app/api/apps/${appId}`;
     }
 
     async request(endpoint, method = 'GET', body = null) {
