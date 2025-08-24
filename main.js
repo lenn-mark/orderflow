@@ -1,8 +1,9 @@
+
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
     const expectedApiKey = Deno.env.get("BASE44_API_KEY");
     if (!expectedApiKey) {
-        const message = "CRITICAL: DENO_API_KEY environment variable is not set on Deno Deploy!";
+        const message = "CRITICAL: BASE44_API_KEY environment variable is not set on Deno Deploy!";
         console.error(message);
         return {
             message,
@@ -12,7 +13,7 @@ function authenticateRequest(req) {
     
     const authHeader = req.headers.get("Base44-Service-Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        const message = "No Authorization header found or it does not start with 'Bearer '";
+        const message = "No Base44-Service-Authorization header found or it does not start with 'Bearer '";
         return {
             message,
             isCorrect: false
@@ -324,7 +325,7 @@ Deno.serve(async (req) => {
     const corsHeaders = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Allow-Headers': 'Content-Type, Base44-Service-Authorization',
         'Content-Type': 'application/json'
     };
 
@@ -341,7 +342,7 @@ Deno.serve(async (req) => {
                 details: authResult.providedKey ? {
                     providedKeyPrefix: authResult.providedKey.substring(0, 4) + '...',
                     expectedKeyPrefix: authResult.expectedApiKey ? authResult.expectedApiKey.substring(0, 4) + '...' : 'NOT SET'
-                } : 'No key provided in Authorization header'
+                } : 'No key provided in Base44-Service-Authorization header'
             }), { 
                 status: 401, 
                 headers: corsHeaders 
@@ -391,7 +392,7 @@ Deno.serve(async (req) => {
                     environment: {
                         hasAppId: !!appId,
                         hasApiKey: !!apiKey,
-                        hasDenoKey: !!Deno.env.get("DENO_API_KEY"),
+                        hasDenoKey: !!Deno.env.get("DENO_API_KEY"), // Original outline kept this as DENO_API_KEY, adhering to instruction.
                         hasAmazonClientId: !!Deno.env.get("AMAZON_CLIENT_ID"),
                         hasAmazonSecret: !!Deno.env.get("AMAZON_CLIENT_SECRET")
                     }
@@ -623,7 +624,7 @@ Deno.serve(async (req) => {
                             environment: {
                                 hasAppId: !!appId,
                                 hasApiKey: !!apiKey,
-                                hasDenoKey: !!Deno.env.get("DENO_API_KEY"),
+                                hasDenoKey: !!Deno.env.get("DENO_API_KEY"), // Original outline kept this as DENO_API_KEY, adhering to instruction.
                                 hasAmazonClientId: !!Deno.env.get("AMAZON_CLIENT_ID"),
                                 hasAmazonSecret: !!Deno.env.get("AMAZON_CLIENT_SECRET")
                             }
