@@ -197,7 +197,7 @@ async function syncUserOrdersInternal(api, userId, connection) {
     let currentAccessToken = connection.access_token;
     
     // Token süresi dolduysa yenile
-    if (new Date(connection.token_expires_at) <= new Date()) {
+    if (new Date(connection.token_expires_at) > new Date()) {
         console.log('Access token expired, refreshing...');
         try {
             const newTokens = await getAmazonAccessToken(connection.refresh_token);
@@ -211,7 +211,7 @@ async function syncUserOrdersInternal(api, userId, connection) {
             console.log('Access token refreshed successfully');
         } catch (error) {
             console.error('Token refresh failed:', error);
-            throw new Error('Token refresh failed');
+            throw new Error(`Token refresh failed ${connection}`);
         }
     }
 
