@@ -13,7 +13,7 @@ function authenticateRequest(req) {
         };
     }
     
-    const authHeader = req.headers.get("Authorization"); // Changed header name as per outline
+    const authHeader = req.headers.get("Base44-Service-Authorization"); // Changed header name as per outline
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
         const message = "No Authorization header found or it does not start with 'Bearer '";
         return {
