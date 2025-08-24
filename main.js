@@ -382,13 +382,6 @@ Deno.serve(async (req) => {
                     const currentUser = users[0];
                     let userConnection;
 
-                    return new Response(JSON.stringify({ 
-                       currentUser
-                    }), { 
-                        status: 200, 
-                        headers: corsHeaders 
-                    });
-
                     if (connectionId) {
                         userConnection = await db.UserConnection.get(connectionId);
                         if (!userConnection || userConnection.user_id !== currentUser.id) {
