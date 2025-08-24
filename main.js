@@ -1,4 +1,4 @@
-import { createClientFromRequest } from 'npm:@base44/sdk@0.6.0';
+import { createClient } from 'npm:@base44/sdk';
 
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
@@ -278,8 +278,11 @@ Deno.serve(async (req) => {
         }
 
         // *** SDK 0.6.0 İÇİN DÜZELTME: Daha açık client başlatma ***
-        const base44 = createClientFromRequest(req);
-        
+        const base44 = createClient({
+            appId: Deno.env.get("BASE44_APP_ID"),
+            serviceToken : Deno.env.get("BASE44_API_KEY")
+        });
+        return new Response(JSON.stringify({ base44 }));
         // Service role için gerekli token'ı manuel olarak ayarlıyoruz
         const serviceToken = Deno.env.get("BASE44_API_KEY");
         if (!serviceToken) {
@@ -523,8 +526,7 @@ Deno.serve(async (req) => {
                     });
                 }
 
-                const allConnections = await db.UserConnection.list();
-                return new Response(JSON.stringify({ "test": "test" }));
+                const allConnections = await db.UserConnection.list();        
                 const allUsers = await db.User.list();
                 const targetUser = await db.User.filter({ email: debugUserEmail });
 
