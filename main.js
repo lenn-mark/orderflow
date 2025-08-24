@@ -37,7 +37,7 @@ Deno.serve(async (req) => {
 
     // 1. Güvenlik Kontrolü
     if (!authenticateRequest(req)) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), { 
+        return new Response(JSON.stringify({ error: "Unauthorized", fromHere : true }), { 
             status: 401, 
             headers: corsHeaders 
         });
