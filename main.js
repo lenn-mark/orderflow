@@ -34,7 +34,7 @@ function authenticateRequest(req) {
     };
 }
 
-// --- BASE44 API HELPER CLASS ---
+// --- BASE44 API HELPER CLASS (Filtresiz) ---
 class Base44API {
     constructor(appId, apiKey) {
         this.appId = appId;
@@ -67,14 +67,11 @@ class Base44API {
         return response.json();
     }
 
-    // Entity operations
-    async getEntityRecords(entityName, filters = {}, sort = null, limit = null, offset = null) {
+    // Entity operations (filters parametresi kaldırıldı)
+    async getEntityRecords(entityName, sort = null, limit = null, offset = null) {
         let query = `/entities/${entityName}`;
         const params = new URLSearchParams();
         
-        if (Object.keys(filters).length > 0) {
-            params.append('filters', JSON.stringify(filters));
-        }
         if (sort) params.append('sort', sort);
         if (limit) params.append('limit', limit.toString());
         if (offset) params.append('offset', offset.toString());
@@ -83,9 +80,7 @@ class Base44API {
             query += `?${params.toString()}`;
         }
         
-        const result = await this.request(query);
-        // Base44 API returns results in a 'data' field for getEntityRecords
-        return result.data || result; 
+        return this.request(query);
     }
 
     async createEntityRecord(entityName, data) {
@@ -194,7 +189,8 @@ async function fetchOrderItems(amazonOrderId, accessToken, region) {
     }
 }
 
-// --- SİPARİŞ SENKRONİZASYON İÇ FONKSİYONU (USER ID BAZLI) ---
+
+// --- SİPARİŞ SENKRONİZASYON İÇ FONKSİYONU (Manuel Filtreleme ile) ---
 async function syncUserOrdersInternal(api, userId, connection) {
     console.log(`Starting order sync for user ID: ${userId}, connection: ${connection.id}`);
     
@@ -219,16 +215,20 @@ async function syncUserOrdersInternal(api, userId, connection) {
         }
     }
 
-    // Get user's active marketplaces
-    const userMarketplaces = await api.getEntityRecords('UserMarketplace', { 
-        user_id: userId, 
-        is_active: true 
-    });
+    // Get ALL marketplaces and filter in-memory
+    const allMarketplaces = await api.getEntityRecords('UserMarketplace');
+    const userMarketplaces = allMarketplaces.filter(m => m.user_id === userId && m.is_active);
     
     if (userMarketplaces.length === 0) {
         console.log('No active marketplaces found for user');
         return { totalFound: 0, totalSynced: 0, totalUpdated: 0 };
     }
+    
+    // Pre-fetch all orders for this user to avoid repeated full scans
+    // WARNING: This is inefficient as it fetches ALL orders from the DB.
+    // This is a workaround because API filtering is not working.
+    const allOrdersInDB = await api.getEntityRecords('Order');
+    const userOrdersInDB = allOrdersInDB.filter(o => o.created_by === userId);
 
     let totalFound = 0;
     let totalSynced = 0;
@@ -250,16 +250,10 @@ async function syncUserOrdersInternal(api, userId, connection) {
             
             for (const amazonOrder of amazonOrders) {
                 try {
-                    // Existing order check by amazon_order_id and user_id
-                    const existingOrders = await api.getEntityRecords('Order', { 
-                        amazon_order_id: amazonOrder.AmazonOrderId,
-                        created_by: userId
-                    });
+                    // Existing order check (in-memory)
+                    const existingOrder = userOrdersInDB.find(o => o.amazon_order_id === amazonOrder.AmazonOrderId);
                     
-                    // Fetch order items
                     const orderItems = await fetchOrderItems(amazonOrder.AmazonOrderId, currentAccessToken, connection.region);
-                    
-                    // Transform items for our format
                     const transformedItems = orderItems.map(item => ({
                         order_item_id: item.OrderItemId,
                         asin: item.ASIN,
@@ -267,14 +261,13 @@ async function syncUserOrdersInternal(api, userId, connection) {
                         title: item.Title,
                         quantity_ordered: item.QuantityOrdered,
                         quantity_shipped: item.QuantityShipped || 0,
-                        item_price: item.ItemPrice, // Store the full object
-                        shipping_price: item.ShippingPrice, // Store the full object
-                        item_tax: item.ItemTax, // Store the full object
-                        shipping_tax: item.ShippingTax // Store the full object
+                        item_price: item.ItemPrice,
+                        shipping_price: item.ShippingPrice,
+                        item_tax: item.ItemTax,
+                        shipping_tax: item.ShippingTax
                     }));
 
                     const orderData = {
-                        created_by: userId,
                         amazon_order_id: amazonOrder.AmazonOrderId,
                         seller_order_id: amazonOrder.SellerOrderId,
                         purchase_date: amazonOrder.PurchaseDate,
@@ -285,8 +278,8 @@ async function syncUserOrdersInternal(api, userId, connection) {
                         order_channel: amazonOrder.OrderChannel,
                         ship_service_level: amazonOrder.ShipServiceLevel,
                         order_total: amazonOrder.OrderTotal,
-                        number_of_items_shipped: amazonOrder.NumberOfItemsShipped || 0,
-                        number_of_items_unshipped: amazonOrder.NumberOfItemsUnshipped || 0,
+                        number_of_items_shipped: amazonOrder.NumberOfItemsShipped,
+                        number_of_items_unshipped: amazonOrder.NumberOfItemsUnshipped,
                         payment_method: amazonOrder.PaymentMethod,
                         payment_method_details: amazonOrder.PaymentMethodDetails,
                         marketplace_id: amazonOrder.MarketplaceId,
@@ -316,11 +309,12 @@ async function syncUserOrdersInternal(api, userId, connection) {
                         automated_shipping_settings: amazonOrder.AutomatedShippingSettings,
                         has_regulated_items: amazonOrder.HasRegulatedItems,
                         electronic_invoice_status: amazonOrder.ElectronicInvoiceStatus,
-                        items: transformedItems
+                        items: transformedItems,
+                        created_by: userId
                     };
 
-                    if (existingOrders.length > 0) {
-                        await api.updateEntityRecord('Order', existingOrders[0].id, orderData);
+                    if (existingOrder) {
+                        await api.updateEntityRecord('Order', existingOrder.id, orderData);
                         totalUpdated++;
                         console.log(`Updated order: ${amazonOrder.AmazonOrderId}`);
                     } else {
@@ -329,13 +323,13 @@ async function syncUserOrdersInternal(api, userId, connection) {
                         console.log(`Created new order: ${amazonOrder.AmazonOrderId}`);
                     }
                     
-                } catch (orderError) {
-                    console.error(`Failed to process order ${amazonOrder.AmazonOrderId}:`, orderError.message);
+                } catch (error) {
+                    console.error(`Failed to sync order ${amazonOrder.AmazonOrderId}:`, error.message);
                 }
             }
             
-        } catch (marketplaceError) {
-            console.error(`Failed to sync marketplace ${marketplace.marketplace_id}:`, marketplaceError.message);
+        } catch (error) {
+            console.error(`Failed to sync marketplace ${marketplace.marketplace_id}:`, error.message);
         }
     }
 
@@ -371,42 +365,31 @@ Deno.serve(async (req) => {
             });
         }
 
-        // Base44 API client'ını oluştur
         const appId = Deno.env.get("BASE44_APP_ID");
         const apiKey = Deno.env.get("BASE44_API_KEY");
-        
         if (!appId || !apiKey) {
             throw new Error("BASE44_APP_ID or BASE44_API_KEY environment variables are not set");
         }
-
         const api = new Base44API(appId, apiKey);
+        
         const { action, params } = await req.json();
-
         console.log(`Received action: ${action}`);
 
-        // ACTION HANDLERS
         switch (action) {
             case 'exchangeCodeForTokens':
                 try {
                     const { userId, spapi_oauth_code, selling_partner_id, redirect_uri } = params;
+                    // Note: The outline removed explicit validation here, relying on downstream errors if params are missing.
                     
-                    if (!userId || !spapi_oauth_code || !selling_partner_id) {
-                        return new Response(JSON.stringify({ 
-                            error: "Missing required parameters: userId, spapi_oauth_code, selling_partner_id" 
-                        }), { 
-                            status: 400, 
-                            headers: corsHeaders 
-                        });
-                    }
-
                     console.log(`Exchanging code for user ID: ${userId}`);
-                    
+
                     const tokens = await exchangeCodeForTokens(spapi_oauth_code, redirect_uri);
                     const expiresAt = new Date(Date.now() + (tokens.expires_in * 1000));
                     
                     const connectionData = {
                         user_id: userId,
                         region: 'NA', // Default, could be made configurable
+                        spapi_oauth_code, // Added as per outline
                         selling_partner_id,
                         access_token: tokens.access_token,
                         refresh_token: tokens.refresh_token,
@@ -415,23 +398,15 @@ Deno.serve(async (req) => {
                     };
                     
                     await api.createEntityRecord('UserConnection', connectionData);
-                    
-                    return new Response(JSON.stringify({ 
-                        success: true, 
-                        message: 'Connection created successfully' 
-                    }), { headers: corsHeaders });
-                    
+                    return new Response(JSON.stringify({ success: true, message: 'Connection created successfully' }), { headers: corsHeaders });
                 } catch (error) {
                     console.error('Exchange code error:', error);
-                    return new Response(JSON.stringify({ 
-                        error: error.message 
-                    }), { status: 500, headers: corsHeaders });
+                    return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
                 }
 
             case 'syncUserOrders':
                 try {
                     const { userId } = params;
-                    
                     if (!userId) {
                         return new Response(JSON.stringify({ error: 'userId parameter is required' }), { 
                             status: 400, 
@@ -440,22 +415,19 @@ Deno.serve(async (req) => {
                     }
                     
                     console.log(`Syncing orders for user ID: ${userId}`);
-                    
-                    // Get user connections
-                    const connections = await api.getEntityRecords('UserConnection', { 
-                        user_id: userId, 
-                        status: 'active' 
-                    });
-                    
+
+                    // Get all connections and filter in-memory
+                    const allConnections = await api.getEntityRecords('UserConnection');
+                    const connections = allConnections.filter(c => c.user_id === userId && c.status === 'active');
+
                     if (connections.length === 0) {
                         return new Response(JSON.stringify({ 
-                            success: true, 
-                            message: 'No active Amazon connections found for user',
+                            error: 'No active Amazon connections found for user', // Changed to error message
                             totalFound: 0,
                             totalSynced: 0,
                             totalUpdated: 0,
                             connectionsProcessed: 0
-                        }), { status: 200, headers: corsHeaders });
+                        }), { status: 404, headers: corsHeaders }); // Changed status to 404
                     }
                     
                     let totalFound = 0, totalSynced = 0, totalUpdated = 0;
@@ -484,32 +456,28 @@ Deno.serve(async (req) => {
 
             case 'syncAllOrders':
                 try {
-                    // Get all active connections
-                    const allConnections = await api.getEntityRecords('UserConnection', { 
-                        status: 'active' 
-                    });
-                    
-                    let processedConnections = 0;
-                    let totalUsersProcessed = 0;
-                    let totalFound = 0, totalSynced = 0, totalUpdated = 0;
+                    // Get all connections and filter active ones in-memory
+                    const allConnectionsRaw = await api.getEntityRecords('UserConnection');
+                    const allActiveConnections = allConnectionsRaw.filter(c => c.status === 'active');
                     
                     // Group by user_id
                     const userConnections = {};
-                    for (const conn of allConnections) {
+                    for (const conn of allActiveConnections) {
                         if (!userConnections[conn.user_id]) {
                             userConnections[conn.user_id] = [];
                         }
                         userConnections[conn.user_id].push(conn);
                     }
                     
-                    totalUsersProcessed = Object.keys(userConnections).length;
-
-                    if (totalUsersProcessed === 0) {
+                    let processedUsers = 0; // Distinct users for whom sync was attempted
+                    let totalFound = 0, totalSynced = 0, totalUpdated = 0;
+                    
+                    if (Object.keys(userConnections).length === 0) {
                         return new Response(JSON.stringify({ 
                             success: true, 
                             message: "No active connections to sync.",
-                            processedConnections: 0,
-                            totalConnections: 0, // This should be allConnections.length
+                            totalUsers: 0,
+                            processedUsers: 0,
                             totalFound: 0,
                             totalSynced: 0,
                             totalUpdated: 0
@@ -527,7 +495,7 @@ Deno.serve(async (req) => {
                                 totalUpdated += result.totalUpdated;
                             }
                             
-                            processedConnections++;
+                            processedUsers++;
                         } catch (error) {
                             console.error(`Failed to sync user ID ${userId}:`, error.message);
                         }
@@ -535,8 +503,8 @@ Deno.serve(async (req) => {
                     
                     return new Response(JSON.stringify({ 
                         success: true,
-                        processedConnections: processedConnections, // number of distinct users processed
-                        totalConnections: allConnections.length, // total number of connections found
+                        totalUsers: Object.keys(userConnections).length, // total number of distinct users found with active connections
+                        processedUsers: processedUsers, // number of distinct users actually processed
                         totalFound,
                         totalSynced,
                         totalUpdated
