@@ -8,13 +8,19 @@ function authenticateRequest(req) {
     
     if (!expectedApiKey) {
         console.error("CRITICAL: BASE44_API_KEY environment variable is not set!");
-        return false;
+        return {
+         error : "CRITICAL: BASE44_API_KEY environment variable is not set!",
+         isCorrect : false   
+        };
     }
     
     const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
         console.warn("Missing or malformed Authorization header");
-        return false;
+        return {
+         error : "Missing or malformed Authorization header",
+         isCorrect : false   
+        };
     }
 
     const providedKey = authHeader.substring(7);
