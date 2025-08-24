@@ -61,7 +61,7 @@ class Base44API {
         
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`Base44 API Error: ${response.status} - ${errorText}`);
+            throw new Error(`Base44 API Error: ${response.status} - ${errorText} - ${url}`);
         }
         
         return response.json();
