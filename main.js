@@ -1,24 +1,39 @@
+// main.js - Deno Deploy için Amazon SP-API Fonksiyonu (SDK'sız)
+
 import { createClientFromRequest } from 'npm:@base44/sdk@0.5.0';
 
 // --- GÜVENLİK KONTROLÜ ---
 function authenticateRequest(req) {
-    const expectedApiKey = Deno.env.get("DENO_API_KEY");
+    const expectedApiKey = Deno.env.get("BASE44_API_KEY");
+    
     if (!expectedApiKey) {
-        console.error("CRITICAL: DENO_API_KEY environment variable is not set on Deno Deploy!");
-        return false;
+        console.error("CRITICAL: BASE44_API_KEY environment variable is not set!");
+        return {
+         error : "CRITICAL: BASE44_API_KEY environment variable is not set!",
+         isCorrect : false   
+        };
     }
     
     const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return false;
+        console.warn("Missing or malformed Authorization header");
+        return {
+         error : "Missing or malformed Authorization header",
+         isCorrect : false   
+        };
     }
 
     const providedKey = authHeader.substring(7);
-    return providedKey === expectedApiKey;
+    return {
+     providedKey,
+     expectedApiKey,
+     isCorrect : providedKey === expectedApiKey
+    };
 }
 
 // --- ANA FONKSİYON ---
 Deno.serve(async (req) => {
+    // CORS headers
     const corsHeaders = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -26,63 +41,67 @@ Deno.serve(async (req) => {
         'Content-Type': 'application/json'
     };
 
+    // Handle preflight requests
     if (req.method === 'OPTIONS') {
-        return new Response(null, { status: 204, headers: corsHeaders });
+        return new Response(null, { status: 200, headers: corsHeaders });
     }
 
-    try {
-        if (!authenticateRequest(req)) {
-            return new Response(JSON.stringify({ error: "Unauthorized", fromHere: true }), { 
-                status: 401, 
-                headers: corsHeaders 
-            });
-        }
-
-        const base44 = createClientFromRequest(req, {
-            // Deno Deploy'daki environment variable'ları kullanarak SDK'yı başlatıyoruz.
-            appId: Deno.env.get("BASE44_APP_ID"),
-            apiKey: Deno.env.get("BASE44_API_KEY") // Bu, Service Role anahtarı olmalı
+    // 1. Güvenlik Kontrolü
+    const authRequest = await authenticateRequest(req);
+    if (!authRequest.isCorrect) {
+        return new Response(JSON.stringify({ error: "Unauthorized", fromHere : true, authRequest }), { 
+            status: 401, 
+            headers: corsHeaders 
         });
-        const db = base44.asServiceRole.entities; // Admin yetkileriyle işlem yapmak için asServiceRole kullanıyoruz
+    }
 
-        let payload = {};
-        try {
-            payload = await req.json();
-        } catch (e) {
-            return new Response(JSON.stringify({ error: "Invalid JSON in request body" }), { 
-                status: 400, 
-                headers: corsHeaders 
-            });
-        }
+    // 2. Base44 Client'ını Oluştur
+    const base44 = createClientFromRequest(req);
+    const db = base44.entities;
 
-        const { action, params = {} } = payload;
-        const { userEmail } = params;
+    // 3. İstek Gövdesini Al
+    let payload = {};
+    try {
+        payload = await req.json();
+    } catch (e) {
+        return new Response(JSON.stringify({ error: "Invalid JSON in request body" }), { 
+            status: 400, 
+            headers: corsHeaders 
+        });
+    }
 
-        if (action !== 'test' && !userEmail) {
-            return new Response(JSON.stringify({ error: "userEmail is required in payload" }), { 
-                status: 400, 
-                headers: corsHeaders 
-            });
-        }
+    const { action, params = {} } = payload;
+    const { userEmail } = params;
 
+    // 4. Kullanıcıyı Doğrula
+    if (!userEmail) {
+        return new Response(JSON.stringify({ error: "userEmail is required in payload" }), { 
+            status: 400, 
+            headers: corsHeaders 
+        });
+    }
+
+    const users = await db.User.filter({ email: userEmail });
+    if (!users || users.length === 0) {
+        return new Response(JSON.stringify({ error: "User not found" }), { 
+            status: 404, 
+            headers: corsHeaders 
+        });
+    }
+    const currentUser = users[0];
+
+    // 5. Aksiyona Göre İşlem Yap
+    try {
         switch (action) {
             case 'test':
                 return new Response(JSON.stringify({
                     success: true,
-                    message: "Deno function is working perfectly!",
-                    timestamp: new Date().toISOString()
+                    message: "Amazon SP-API function is working perfectly!",
+                    timestamp: new Date().toISOString(),
+                    userEmail: currentUser.email
                 }), { headers: corsHeaders });
 
             case 'syncAllOrders':
-                const users = await db.User.filter({ email: userEmail });
-                if (!users || users.length === 0) {
-                    return new Response(JSON.stringify({ error: "User not found" }), { 
-                        status: 404, 
-                        headers: corsHeaders 
-                    });
-                }
-                const currentUser = users[0];
-
                 if (currentUser.role !== 'system_admin') {
                     return new Response(JSON.stringify({ 
                         success: false,
@@ -93,10 +112,10 @@ Deno.serve(async (req) => {
                     });
                 }
 
-                // TODO: Gerçek senkronizasyon mantığı buraya eklenecek.
+                // Basit bir mock response - gerçek sync'i ileriki adımda ekleyeceğiz
                 return new Response(JSON.stringify({
                     success: true,
-                    message: "Sync completed successfully (mock response)",
+                    message: "Sync completed successfully (mock)",
                     processedConnections: 1,
                     totalConnections: 1,
                     totalFound: 5,
@@ -113,9 +132,9 @@ Deno.serve(async (req) => {
                 });
         }
     } catch (error) {
-        console.error(`Error processing request:`, error);
+        console.error(`Error processing action '${action}':`, error.message);
         return new Response(JSON.stringify({ 
-            error: "An internal server error occurred in Deno Deploy function.", 
+            error: "An internal server error occurred.", 
             details: error.message 
         }), { 
             status: 500, 
